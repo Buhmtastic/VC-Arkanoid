@@ -31,13 +31,26 @@ class Paddle:
         self.laser_active = False
         self.catch_active = False
         self.caught_ball = None
+        self.speed = 8
 
     def move(self):
+        # Mouse control (primary)
         self.rect.centerx = pygame.mouse.get_pos()[0]
+
+        # Keyboard control (secondary)
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_LEFT]:
+            self.rect.x -= self.speed
+        if keys[pygame.K_RIGHT]:
+            self.rect.x += self.speed
+
+        # Boundary check
         if self.rect.left < 0:
             self.rect.left = 0
         if self.rect.right > SCREEN_WIDTH:
             self.rect.right = SCREEN_WIDTH
+
+        # Update caught ball position
         if self.caught_ball:
             self.caught_ball.rect.centerx = self.rect.centerx
 
@@ -52,7 +65,7 @@ class Ball:
         self.dy = -5
         self.is_caught = False
 
-    def move(self, paddle, bricks, power_ups, enemies, sound_manager, doh):
+    def move(self, paddle, bricks, power_ups, enemies, sound_manager, doh, game):
         if self.is_caught:
             return
 
@@ -74,7 +87,12 @@ class Ball:
                 paddle.caught_ball = self
                 self.rect.bottom = paddle.rect.top
             else:
-                self.dy *= -1
+                # Adjust ball angle based on where it hits the paddle
+                hit_pos = (self.rect.centerx - paddle.rect.left) / paddle.rect.width
+                # hit_pos ranges from 0 (left edge) to 1 (right edge)
+                # Map to angle: -8 (left) to +8 (right)
+                self.dx = (hit_pos - 0.5) * 16
+                self.dy = -abs(self.dy)  # Always bounce upward
                 sound_manager.play(sound_manager.bounce)
 
         # Collision with bricks
@@ -82,19 +100,19 @@ class Ball:
             if self.rect.colliderect(brick.rect):
                 if brick.hit():
                     bricks.remove(brick)
-                    # self.score is not accessible here, score is in Game class
+                    game.score += 10
                     sound_manager.play(sound_manager.brick_destroy)
                     if random.random() < 0.3: # 30% chance to drop a power-up
                         power_up_type = random.choice(['enlarge', 'slow', 'laser', 'catch', 'disrupt', 'break', 'player'])
                         power_ups.append(PowerUp(brick.rect.centerx, brick.rect.centery, power_up_type))
                 self.dy *= -1
                 break
-        
+
         # Collision with enemies
         for enemy in enemies[:]:
             if self.rect.colliderect(enemy.rect):
                 enemies.remove(enemy)
-                # self.score is not accessible here, score is in Game class
+                game.score += 50
                 self.dy *= -1
                 break
 
@@ -102,6 +120,7 @@ class Ball:
         if doh and self.rect.colliderect(doh.rect):
             if doh.hit():
                 return True # Doh is defeated
+            game.score += 100
             self.dy *= -1
             sound_manager.play(sound_manager.bounce)
         return False
@@ -141,14 +160,39 @@ class PowerUp:
     def __init__(self, x, y, type):
         self.rect = pygame.Rect(x - 15, y - 7, 30, 14)
         self.type = type
-        self.color = BLUE
         self.dy = 3
+        # Set color based on power-up type
+        self.color_map = {
+            'enlarge': (0, 255, 0),      # Green (E)
+            'slow': (255, 0, 0),          # Red (S)
+            'laser': (255, 255, 0),       # Yellow (L)
+            'catch': (0, 255, 255),       # Cyan (C)
+            'disrupt': (255, 0, 255),     # Magenta (D)
+            'break': (255, 165, 0),       # Orange (B)
+            'player': (255, 192, 203)     # Pink (P)
+        }
+        self.color = self.color_map.get(type, BLUE)
+        self.label_map = {
+            'enlarge': 'E',
+            'slow': 'S',
+            'laser': 'L',
+            'catch': 'C',
+            'disrupt': 'D',
+            'break': 'B',
+            'player': 'P'
+        }
+        self.label = self.label_map.get(type, '?')
 
     def move(self):
         self.rect.y += self.dy
 
     def draw(self, screen):
         pygame.draw.rect(screen, self.color, self.rect)
+        # Draw label text
+        font = pygame.font.Font(None, 20)
+        text = font.render(self.label, True, BLACK)
+        text_rect = text.get_rect(center=self.rect.center)
+        screen.blit(text, text_rect)
 
 class Laser:
     def __init__(self, x, y):
@@ -224,6 +268,7 @@ class Game:
         pygame.display.set_caption("VC-Arkanoid")
         self.clock = pygame.time.Clock()
         self.running = True
+        self.paused = False
         self.level = 0
         self.lives = 3
         self.score = 0
@@ -268,31 +313,62 @@ class Game:
             self.update()
             self.draw()
             self.clock.tick(60)
-        
+
         if self.lives <= 0:
-            self.show_game_over_screen()
+            if self.show_game_over_screen():
+                self.reset_game()
+                self.run()
         else:
-            self.show_game_win_screen()
-        
+            if self.show_game_win_screen():
+                self.reset_game()
+                self.run()
+
         pygame.quit()
         sys.exit()
+
+    def reset_game(self):
+        self.running = True
+        self.paused = False
+        self.level = 0
+        self.lives = 3
+        self.score = 0
+        self.paddle = Paddle()
+        self.balls = [Ball()]
+        self.bricks = self.create_bricks(self.level)
+        self.power_ups = []
+        self.lasers = []
+        self.enemies = []
+        self.doh = None
+        self.bombs = []
+        self.power_up_timers = {}
+        self.enemy_spawn_timer = 0
+        self.bomb_spawn_timer = 0
 
     def handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE or event.key == pygame.K_p:
+                    self.paused = not self.paused
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if self.paddle.laser_active:
-                    self.lasers.append(Laser(self.paddle.rect.centerx, self.paddle.rect.top))
-                if self.paddle.caught_ball:
-                    self.paddle.caught_ball.is_caught = False
-                    self.paddle.caught_ball.dy *= -1
-                    self.paddle.caught_ball = None
+                if not self.paused:
+                    if self.paddle.laser_active:
+                        # Fire lasers from both sides of the paddle
+                        self.lasers.append(Laser(self.paddle.rect.left + 10, self.paddle.rect.top))
+                        self.lasers.append(Laser(self.paddle.rect.right - 10, self.paddle.rect.top))
+                    if self.paddle.caught_ball:
+                        self.paddle.caught_ball.is_caught = False
+                        self.paddle.caught_ball.dy *= -1
+                        self.paddle.caught_ball = None
 
     def update(self):
+        if self.paused:
+            return
+
         self.paddle.move()
         for ball in self.balls[:]:
-            doh_defeated = ball.move(self.paddle, self.bricks, self.power_ups, self.enemies, self.sound_manager, self.doh)
+            doh_defeated = ball.move(self.paddle, self.bricks, self.power_ups, self.enemies, self.sound_manager, self.doh, self)
             if doh_defeated:
                 self.doh = None
             if ball.rect.bottom >= SCREEN_HEIGHT:
@@ -421,7 +497,7 @@ class Game:
                 new_ball2.dx = original_ball.dx
                 new_ball2.dy = -original_ball.dy
                 self.balls.append(new_ball1)
-                self.balls.append(new__ball2)
+                self.balls.append(new_ball2)
         elif power_up.type == 'break':
             self.next_level()
         elif power_up.type == 'player':
@@ -448,17 +524,21 @@ class Game:
 
     def show_game_over_screen(self):
         self.screen.fill(BLACK)
-        self.draw_text("GAME OVER", SCREEN_WIDTH // 2 - 100, SCREEN_HEIGHT // 2 - 50)
-        self.draw_text("Press any key to exit", SCREEN_WIDTH // 2 - 150, SCREEN_HEIGHT // 2)
+        self.draw_text("GAME OVER", SCREEN_WIDTH // 2 - 100, SCREEN_HEIGHT // 2 - 80)
+        self.draw_text(f"Final Score: {self.score}", SCREEN_WIDTH // 2 - 120, SCREEN_HEIGHT // 2 - 30)
+        self.draw_text("Press R to restart", SCREEN_WIDTH // 2 - 130, SCREEN_HEIGHT // 2 + 20)
+        self.draw_text("Press ESC to exit", SCREEN_WIDTH // 2 - 120, SCREEN_HEIGHT // 2 + 60)
         pygame.display.flip()
-        self.wait_for_key()
+        return self.wait_for_key()
 
     def show_game_win_screen(self):
         self.screen.fill(BLACK)
-        self.draw_text("YOU WIN!", SCREEN_WIDTH // 2 - 80, SCREEN_HEIGHT // 2 - 50)
-        self.draw_text("Press any key to exit", SCREEN_WIDTH // 2 - 150, SCREEN_HEIGHT // 2)
+        self.draw_text("YOU WIN!", SCREEN_WIDTH // 2 - 80, SCREEN_HEIGHT // 2 - 80)
+        self.draw_text(f"Final Score: {self.score}", SCREEN_WIDTH // 2 - 120, SCREEN_HEIGHT // 2 - 30)
+        self.draw_text("Press R to restart", SCREEN_WIDTH // 2 - 130, SCREEN_HEIGHT // 2 + 20)
+        self.draw_text("Press ESC to exit", SCREEN_WIDTH // 2 - 120, SCREEN_HEIGHT // 2 + 60)
         pygame.display.flip()
-        self.wait_for_key()
+        return self.wait_for_key()
 
     def wait_for_key(self):
         waiting = True
@@ -466,9 +546,13 @@ class Game:
             self.clock.tick(60)
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    waiting = False
+                    return False
                 if event.type == pygame.KEYUP:
-                    waiting = False
+                    if event.key == pygame.K_r:
+                        return True  # Restart
+                    elif event.key == pygame.K_ESCAPE:
+                        return False  # Exit
+        return False
 
     def draw(self):
         self.screen.fill(BLACK)
@@ -487,11 +571,20 @@ class Game:
             self.doh.draw(self.screen)
         for bomb in self.bombs:
             bomb.draw(self.screen)
-        
+
         # Draw UI
         self.draw_text(f"Score: {self.score}", 10, 10)
         self.draw_text(f"Lives: {self.lives}", SCREEN_WIDTH - 120, 10)
         self.draw_text(f"Level: {self.level + 1}", SCREEN_WIDTH // 2 - 50, 10)
+
+        # Draw pause overlay
+        if self.paused:
+            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+            overlay.set_alpha(128)
+            overlay.fill(BLACK)
+            self.screen.blit(overlay, (0, 0))
+            self.draw_text("PAUSED", SCREEN_WIDTH // 2 - 60, SCREEN_HEIGHT // 2 - 50)
+            self.draw_text("Press P or ESC to resume", SCREEN_WIDTH // 2 - 150, SCREEN_HEIGHT // 2)
 
         pygame.display.flip()
 
